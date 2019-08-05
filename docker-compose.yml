@@ -42,7 +42,6 @@ services:
       - --acme.onDemand=false
       - --acme.onHostRule=true
       - --docker
-      - --docker.domain=${TRAEFIK_DOMAIN}
       - --docker.exposedbydefault=false
       - --docker.watch
     ports:
