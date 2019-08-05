@@ -1,0 +1,92 @@
+version: '3.7'
+
+services:
+  registry:
+    container_name: registry
+    image: registry:2
+    volumes:
+      - ./registry/config.yml:/etc/docker/registry/config.yml:ro
+      - registry-data:/data
+    networks:
+      traefik:
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+    labels:
+      traefik.enable: true
+      traefik.port: 5000
+      traefik.docker.network: traefik
+      traefik.frontend.rule: Host:${REGISTRY_FQDN}; PathPrefix:/v2
+    restart: unless-stopped
+
+  traefik:
+    container_name: traefik
+    image: traefik:latest
+    command:
+      - --loglevel=INFO
+      - --api
+      - --entryPoints=Name:http Address::80 Redirect.EntryPoint:https
+      - --entryPoints=Name:https Address::443 TLS
+      - --defaultentrypoints=http,https
+      - --acme
+      - --acme.acmelogging
+      - --acme.caserver=https://acme-v02.api.letsencrypt.org/directory
+      - --acme.dnschallenge
+      - --acme.dnschallenge.delaybeforecheck=0
+      - --acme.dnschallenge.provider=cloudflare
+      - --acme.dnschallenge.resolvers=1.1.1.1
+      - --acme.entrypoint=https
+      - --acme.email=${ACME_EMAIL}
+      - --acme.storage=/acme/acme.json
+      - --acme.onDemand=false
+      - --acme.onHostRule=true
+      - --docker
+      - --docker.domain=${TRAEFIK_DOMAIN}
+      - --docker.exposedbydefault=false
+      - --docker.watch
+    ports:
+      - 80:80
+      - 443:443
+    environment:
+      - CF_API_EMAIL=${CLOUDFLARE_API_EMAIL}
+      - CF_API_KEY=${CLOUDFLARE_API_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - registry-data:/acme:rw
+    networks:
+      traefik:
+    labels:
+      traefik.enable: "true"
+      traefik.port: "8080"
+      traefik.docker.network: traefik
+      traefik.frontend.rule: "Host:${REGISTRY_FQDN}; PathPrefixStrip:/traefik"
+      com.ouroboros.enable: "true"
+    restart: unless-stopped
+
+  ouroboros:
+    container_name: ouroboros
+    image: pyouroboros/ouroboros
+    environment:
+      CLEANUP: 'true'
+      CRON: '0 3 * * *'
+      LOG_LEVEL: info
+      SELF_UPDATE: 'true'
+      LABEL_ENABLE: 'true'
+      LABELS_ONLY: 'true'
+      TZ: Europe/London
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+networks:
+  traefik:
+    name: traefik
+
+volumes:
+  registry-data:
+    driver: local
+    driver_opts:
+      type: nfs4
+      o: addr=10.1.90.2,rw
+      device: ":/mnt/tank/docker-registry"
