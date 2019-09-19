@@ -1,5 +1,30 @@
 version: '3.7'
 
+volumes:
+  plex-data:
+    driver: local
+    driver_opts:
+      type: nfs4
+      o: addr=10.1.90.2,rw
+      device: ":/mnt/tank/plex"
+  plex-media:
+    driver_opts:
+      type: nfs4
+      o: addr=10.1.90.2,rw
+      device: ":/mnt/tank/media"
+  registry-data:
+    driver: local
+    driver_opts:
+      type: nfs4
+      o: addr=10.1.90.2,rw
+      device: ":/mnt/tank/docker-registry"
+
+networks:
+  argo:
+    name: argo
+  traefik:
+    name: traefik
+
 services:
   registry:
     container_name: registry
@@ -15,35 +40,84 @@ services:
         max-file: "5"
     labels:
       traefik.enable: true
-      traefik.port: 5000
       traefik.docker.network: traefik
-      traefik.frontend.rule: Host:${REGISTRY_FQDN}; PathPrefix:/v2
+      traefik.http.routers.registry-insecure.rule: Host(`${REGISTRY_FQDN}`) && PathPrefix(`/v2`)
+      traefik.http.routers.registry-insecure.entrypoints: http
+      traefik.http.routers.registry-insecure.middlewares: httpsRedirect@file
+      traefik.http.routers.registry.rule: Host(`${REGISTRY_FQDN}`) && PathPrefix(`/v2`)
+      traefik.http.routers.registry.entrypoints: https
+      traefik.http.routers.registry.tls.certresolver: default
+      traefik.http.services.registry.loadbalancer.server.scheme: http
+      traefik.http.services.registry.loadbalancer.server.port: 5000
+      com.ouroboros.enable: "true"
+    restart: unless-stopped
+
+  plex:
+    container_name: plex
+    hostname: ${PLEX_FQDN}
+    image: linuxserver/plex
+    environment:
+      VERSION: latest
+      PUID: 911
+      PGID: 911
+      UMASK_SET: 007
+    ports:
+      - 32400:32400/tcp # Plex Media Server
+      - 3005:3005/tcp   # Plex Companion
+      - 8324:8324/tcp   # Roku via Plex Companion
+      - 32469:32469/tcp # Plex DLNA Server
+      - 1900:1900/udp   # Plex DLNA Server
+      - 32410:32410/udp # Plex network discovery
+      - 32412:32412/udp # Plex network discovery
+      - 32413:32413/udp # Plex network discovery
+      - 32414:32414/udp # Plex network discovery
+    volumes:
+      - plex-data:/config
+      - plex-media:/data
+    networks:
+      traefik:
+      argo:
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+    labels:
+      traefik.enable: true
+      traefik.docker.network: traefik
+      traefik.http.routers.plex-insecure.rule: Host(`${PLEX_FQDN}`)
+      traefik.http.routers.plex-insecure.entrypoints: http
+      traefik.http.routers.plex-insecure.middlewares: httpsRedirect@file
+      traefik.http.routers.plex.rule: Host(`${PLEX_FQDN}`)
+      traefik.http.routers.plex.entrypoints: https
+      traefik.http.routers.plex.tls.certresolver: default
+      traefik.http.services.plex.loadbalancer.server.scheme: http
+      traefik.http.services.plex.loadbalancer.server.port: 32400
+      com.ouroboros.enable: "true"
+    restart: unless-stopped
+
+  argo:
+    container_name: argo
+    image: msnelling/cloudflared:latest
+    #entrypoint: ["echo", "Service foo disabled"]
+    environment:
+      - "TUNNEL_HOSTNAME=${PLEX_FQDN}"
+      - "TUNNEL_URL=https://plex:32400"
+      - "TUNNEL_METRICS=127.0.0.1:"
+    volumes:
+      - /etc/cloudflared/cert.pem:/etc/cloudflared/cert.pem
+    networks:
+      argo:
+    labels:
+      com.ouroboros.enable: "true"
+    depends_on:
+      - plex
     restart: unless-stopped
 
   traefik:
     container_name: traefik
     image: traefik:latest
     command:
-      - --loglevel=INFO
-      - --api
-      - --entryPoints=Name:http Address::80 Redirect.EntryPoint:https
-      - --entryPoints=Name:https Address::443 TLS
-      - --defaultentrypoints=http,https
-      - --acme
-      - --acme.acmelogging
-      - --acme.caserver=https://acme-v02.api.letsencrypt.org/directory
-      - --acme.dnschallenge
-      - --acme.dnschallenge.delaybeforecheck=0
-      - --acme.dnschallenge.provider=cloudflare
-      - --acme.dnschallenge.resolvers=1.1.1.1
-      - --acme.entrypoint=https
-      - --acme.email=${ACME_EMAIL}
-      - --acme.storage=/acme/acme.json
-      - --acme.onDemand=false
-      - --acme.onHostRule=true
-      - --docker
-      - --docker.exposedbydefault=false
-      - --docker.watch
+      - --certificatesresolvers.default.acme.email=${CLOUDFLARE_API_EMAIL}
     ports:
       - 80:80
       - 443:443
@@ -52,14 +126,21 @@ services:
       - CF_API_KEY=${CLOUDFLARE_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yaml:/etc/traefik/traefik.yaml
+      - ./traefik.d:/etc/traefik/traefik.d
       - registry-data:/acme:rw
     networks:
       traefik:
     labels:
-      traefik.enable: "true"
-      traefik.port: "8080"
-      traefik.docker.network: traefik
-      traefik.frontend.rule: "Host:${REGISTRY_FQDN}; PathPrefixStrip:/traefik"
+      traefik.enable: true
+      traefik.http.routers.api-insecure.rule: Host(`${REGISTRY_FQDN}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))
+      traefik.http.routers.api-insecure.entrypoints: http
+      traefik.http.routers.api-insecure.middlewares: httpsRedirect@file
+      traefik.http.routers.api.rule: Host(`${REGISTRY_FQDN}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))
+      traefik.http.routers.api.entrypoints: https
+      traefik.http.routers.api.tls.certresolver: default
+      traefik.http.routers.api.middlewares: adminAuth@file
+      traefik.http.routers.api.service: api@internal
       com.ouroboros.enable: "true"
     restart: unless-stopped
 
@@ -77,15 +158,3 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
-
-networks:
-  traefik:
-    name: traefik
-
-volumes:
-  registry-data:
-    driver: local
-    driver_opts:
-      type: nfs4
-      o: addr=10.1.90.2,rw
-      device: ":/mnt/tank/docker-registry"

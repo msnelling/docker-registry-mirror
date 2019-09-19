@@ -1,0 +1,9 @@
+http:
+  middlewares:
+    httpsRedirect:
+      redirectScheme:
+        scheme: https
+    adminAuth:
+      basicAuth:
+        users:
+          - "admin:$2y$11$sJB5EjCFMHkpchLlhWhER.yJsjHg1opyb2JOV279BoWlIevqCcdmK"
