@@ -5,19 +5,25 @@ volumes:
     driver: local
     driver_opts:
       type: nfs4
-      o: addr=10.1.90.2,rw
+      o: addr=10.1.1.175,rw
       device: ":/mnt/tank/plex"
   plex-media:
     driver_opts:
       type: nfs4
-      o: addr=10.1.90.2,rw
+      o: addr=10.1.1.175,rw
       device: ":/mnt/tank/media"
   registry-data:
     driver: local
     driver_opts:
       type: nfs4
-      o: addr=10.1.90.2,rw
+      o: addr=10.1.1.175,rw
       device: ":/mnt/tank/docker-registry"
+  acme-data:
+    driver: local
+    driver_opts:
+      type: nfs4
+      o: addr=10.1.1.175,rw
+      device: ":/mnt/tank/docker-registry/acme"
 
 networks:
   argo:
@@ -49,7 +55,6 @@ services:
       traefik.http.routers.registry.tls.certresolver: default
       traefik.http.services.registry.loadbalancer.server.scheme: http
       traefik.http.services.registry.loadbalancer.server.port: 5000
-      com.ouroboros.enable: "true"
     restart: unless-stopped
 
   plex:
@@ -92,13 +97,11 @@ services:
       traefik.http.routers.plex.tls.certresolver: default
       traefik.http.services.plex.loadbalancer.server.scheme: http
       traefik.http.services.plex.loadbalancer.server.port: 32400
-      com.ouroboros.enable: "true"
     restart: unless-stopped
 
   argo:
     container_name: argo
     image: msnelling/cloudflared:latest
-    #entrypoint: ["echo", "Service foo disabled"]
     environment:
       - "TUNNEL_HOSTNAME=${PLEX_FQDN}"
       - "TUNNEL_URL=https://plex:32400"
@@ -107,15 +110,13 @@ services:
       - /etc/cloudflared/cert.pem:/etc/cloudflared/cert.pem
     networks:
       argo:
-    labels:
-      com.ouroboros.enable: "true"
     depends_on:
       - plex
     restart: unless-stopped
 
   traefik:
     container_name: traefik
-    image: traefik:latest
+    image: traefik:2.1
     command:
       - --certificatesresolvers.default.acme.email=${CLOUDFLARE_API_EMAIL}
     ports:
@@ -128,7 +129,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yaml:/etc/traefik/traefik.yaml
       - ./traefik.d:/etc/traefik/traefik.d
-      - registry-data:/acme:rw
+      - acme-data:/acme:rw
     networks:
       traefik:
     labels:
@@ -141,20 +142,4 @@ services:
       traefik.http.routers.api.tls.certresolver: default
       traefik.http.routers.api.middlewares: adminAuth@file
       traefik.http.routers.api.service: api@internal
-      com.ouroboros.enable: "true"
-    restart: unless-stopped
-
-  ouroboros:
-    container_name: ouroboros
-    image: pyouroboros/ouroboros
-    environment:
-      CLEANUP: 'true'
-      CRON: '0 3 * * *'
-      LOG_LEVEL: info
-      SELF_UPDATE: 'true'
-      LABEL_ENABLE: 'true'
-      LABELS_ONLY: 'true'
-      TZ: Europe/London
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
